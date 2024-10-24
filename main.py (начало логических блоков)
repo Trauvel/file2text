@@ -1,0 +1,132 @@
+import os
+import whisper
+from pyannote.audio import Pipeline as DiarizationPipeline
+import torch
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import nltk
+from transformers import pipeline
+
+nltk.download('punkt')
+
+# Папки
+FILES_DIR = 'files'
+TEXT_DIR = 'text'
+SUM_TEXT_DIR = 'sumText'
+
+# Создаём папки для хранения, если они не существуют
+os.makedirs(TEXT_DIR, exist_ok=True)
+os.makedirs(SUM_TEXT_DIR, exist_ok=True)
+
+# Инициализация модели Whisper
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = whisper.load_model("base", device=device)
+
+# Ваш Hugging Face токен
+YOUR_AUTH_TOKEN = "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"
+
+# Инициализация пайплайна для диаризации с токеном
+diarization_pipeline = DiarizationPipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token=YOUR_AUTH_TOKEN)
+
+# Модель эмбеддингов предложений
+sentence_model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+
+# Модель суммаризации
+summarizer = pipeline('summarization', model='IlyaGusev/rugpt3medium_sum_gazeta')
+
+# Функция для сопоставления спикеров с транскрипцией
+def assign_speakers(transcript_segments, diarization_segments):
+    speaker_transcript = []
+    for segment in transcript_segments:
+        start = segment['start']
+        end = segment['end']
+        text = segment['text']
+
+        # Найти спикера для данного сегмента
+        speaker = None
+        for turn, _, spk in diarization_segments.itertracks(yield_label=True):
+            if turn.start <= start <= turn.end or turn.start <= end <= turn.end or (start <= turn.start and end >= turn.end):
+                speaker = spk
+                break
+
+        if speaker is None:
+            speaker = "Unknown"
+
+        speaker_transcript.append(f"Спикер {speaker}: {text.strip()}")
+
+    return "\n".join(speaker_transcript)
+
+# Улучшенная функция для сегментации текста на логические блоки
+def segment_text(text, max_sentences_per_segment=5):
+    sentences = nltk.sent_tokenize(text)
+    segments = []
+    current_segment = []
+
+    # Разделение текста на сегменты по числу предложений
+    for i, sentence in enumerate(sentences):
+        current_segment.append(sentence)
+        if (i + 1) % max_sentences_per_segment == 0 or i == len(sentences) - 1:
+            segments.append(' '.join(current_segment))
+            current_segment = []
+
+    return segments
+
+# Функция для суммаризации каждого блока
+def summarize_block(block):
+    max_chunk = 500  # Ограничиваем длину блока, чтобы он помещался в модель
+    block = block[:max_chunk]
+
+    summary = summarizer(block, max_length=100, min_length=30, do_sample=False)
+    return summary[0]['summary_text']
+
+# Проход по файлам в папке
+for filename in os.listdir(FILES_DIR):
+    if filename.lower().endswith(('.mp3', '.mp4', '.wav')):
+        file_path = os.path.abspath(os.path.join(FILES_DIR, filename))
+        print(f"Обрабатываем файл: {file_path}")
+
+        if not os.path.exists(file_path):
+            print(f"Файл {file_path} не существует!")
+            continue
+
+        # Шаг 1: Полная транскрипция всего аудио файла с временными метками
+        result = model.transcribe(file_path, language='ru', word_timestamps=False)
+        full_text = result['text']
+        segments = result['segments']
+
+        # Сохранение полного текста без разделения по спикерам
+        full_text_filename = f"{os.path.splitext(filename)[0]}_full.txt"
+        full_text_file_path = os.path.join(TEXT_DIR, full_text_filename)
+        with open(full_text_file_path, "w", encoding="utf-8") as full_text_file:
+            full_text_file.write(full_text)
+        print(f"Полный текст сохранён в {full_text_file_path}")
+
+        # Шаг 2: Диаризация (выделение спикеров)
+        diarization = diarization_pipeline(file_path)
+
+        # Шаг 3: Сопоставление спикеров с транскрипцией
+        speaker_text = assign_speakers(segments, diarization)
+
+        # Сохранение текста со спикерами
+        text_filename = f"{os.path.splitext(filename)[0]}_speakers.txt"
+        text_file_path = os.path.join(TEXT_DIR, text_filename)
+        with open(text_file_path, "w", encoding="utf-8") as text_file:
+            text_file.write(speaker_text)
+        print(f"Текст со спикерами сохранён в {text_file_path}")
+
+        # Шаг 4: Сегментация текста на логические блоки
+        blocks = segment_text(full_text)
+
+        # Шаг 5: Суммаризация каждого блока
+        summaries = []
+        for block in blocks:
+            summary = summarize_block(block)
+            summaries.append(summary)
+
+        # Шаг 6: Сохранение выжимок
+        summary_text = '\n\n'.join(summaries)
+        summary_file_path = os.path.join(SUM_TEXT_DIR, text_filename)
+        with open(summary_file_path, "w", encoding="utf-8") as summary_file:
+            summary_file.write(summary_text)
+        print(f"Суммаризированный текст сохранён в {summary_file_path}")
