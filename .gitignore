@@ -44,4 +44,7 @@ ffmpeg/presets/libvpx-720p.ffpreset
 ffmpeg/presets/libvpx-720p50_60.ffpreset
 ffmpeg/presets/libvpx-1080p.ffpreset
 ffmpeg/presets/libvpx-1080p50_60.ffpreset
-files/example.wav
+files/
+text/
+sumText/
+logical_blocks/

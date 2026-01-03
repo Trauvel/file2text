@@ -1,29 +1,48 @@
 import os
 import whisper
 from pyannote.audio import Pipeline
-import torchaudio
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
 import subprocess
+import torch
 
 # Папки
 FILES_DIR = 'files'
 TEXT_DIR = 'text'
-SUM_TEXT_DIR = 'sumText'
 
-# Создаём папки для хранения, если они не существуют
+# Создаём папку для хранения текстов, если она не существует
 os.makedirs(TEXT_DIR, exist_ok=True)
-os.makedirs(SUM_TEXT_DIR, exist_ok=True)
 
-# Инициализация модели Whisper
-model = whisper.load_model("base")
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Используемое устройство: {device}")
+
+# Выбор модели Whisper
+# Доступные модели и их требования к VRAM:
+# - tiny: ~1GB VRAM, быстро, низкое качество
+# - base: ~1GB VRAM, быстро, среднее качество
+# - small: ~2GB VRAM, хорошо, хороший баланс скорости/качества
+# - medium: ~5GB VRAM, медленно, высокое качество (РЕКОМЕНДУЕТСЯ для RTX 3060 Ti 8GB)
+# - large-v2: ~10GB VRAM, очень медленно, максимальное качество (может не хватить памяти)
+# - large-v3: ~10GB VRAM, очень медленно, максимальное качество (может не хватить памяти)
+WHISPER_MODEL = "medium"  # Измените на "small" если не хватает памяти, или "large-v2" для максимального качества
+
+print(f"Загрузка модели Whisper: {WHISPER_MODEL}...")
+try:
+    model = whisper.load_model(WHISPER_MODEL, device=device)
+    print(f"Модель {WHISPER_MODEL} загружена успешно")
+except RuntimeError as e:
+    if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
+        print(f"ОШИБКА: Не хватает памяти для модели {WHISPER_MODEL}")
+        print("Попробуйте использовать модель 'small' или 'base'")
+        print("Или закройте другие приложения, использующие GPU")
+        raise
+    else:
+        raise
 
 # Ваш Hugging Face токен
-YOUR_AUTH_TOKEN = "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"
+YOUR_AUTH_TOKEN = "REPLACED_TOKEN"
 
 # Инициализация пайплайна для диаризации с токеном
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token=YOUR_AUTH_TOKEN)
+diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token=YOUR_AUTH_TOKEN)
 
 # Функция для сопоставления спикеров с транскрипцией
 def assign_speakers(transcript_segments, diarization_segments):
@@ -47,13 +66,6 @@ def assign_speakers(transcript_segments, diarization_segments):
 
     return speaker_transcript
 
-# Функция для создания выжимки текста
-def summarize_text(text, num_sentences=3):
-    parser = PlaintextParser.from_string(text, Tokenizer("russian"))
-    summarizer = LsaSummarizer()
-    summary = summarizer(parser.document, num_sentences)
-    return " ".join([str(sentence) for sentence in summary])
-
 # Проход по файлам в папке
 for filename in os.listdir(FILES_DIR):
     if filename.lower().endswith(('.mp3', '.mp4', '.wav')):
@@ -64,16 +76,40 @@ for filename in os.listdir(FILES_DIR):
             print(f"Файл {file_path} не существует!")
             continue
 
-        # Конвертация mp3 или mp4 в wav
+        # Конвертация mp3 или mp4 в wav с оптимальными параметрами для Whisper
         if filename.lower().endswith(('.mp3', '.mp4')):
             wav_file_path = os.path.splitext(file_path)[0] + '.wav'
-            subprocess.run(['ffmpeg', '-i', file_path, wav_file_path])
+            print(f"Конвертирую {filename} в WAV...")
+            # Оптимальные параметры для Whisper: моно, 16kHz, 16-bit PCM
+            subprocess.run([
+                'ffmpeg', '-i', file_path,
+                '-ar', '16000',  # Частота дискретизации 16kHz (оптимально для Whisper)
+                '-ac', '1',  # Моно канал
+                '-sample_fmt', 's16',  # 16-bit PCM
+                '-y',  # Перезаписать если файл существует
+                wav_file_path
+            ], check=True, capture_output=True)
             file_path = wav_file_path
+            print("Конвертация завершена")
 
-        # Шаг 1: Полная транскрипция всего аудио файла с временными метками
-        result = model.transcribe(file_path, language='ru', word_timestamps=False)
+        # Шаг 1: Полная транскрипция всего аудио файла с улучшенными параметрами
+        print("Начинаю транскрипцию с улучшенными параметрами...")
+        result = model.transcribe(
+            file_path,
+            language='ru',
+            word_timestamps=True,  # Включаем временные метки слов для лучшей точности
+            task='transcribe',  # Явно указываем задачу транскрипции
+            temperature=0.0,  # Детерминированный режим для стабильности
+            beam_size=5,  # Увеличиваем beam size для лучшего качества
+            best_of=5,  # Пробуем несколько вариантов и выбираем лучший
+            patience=1.0,  # Терпение для beam search
+            condition_on_previous_text=True,  # Используем контекст предыдущего текста
+            initial_prompt="Это разговор на русском языке. ",  # Подсказка для модели
+            verbose=False  # Убираем лишний вывод
+        )
         full_text = result['text']
         segments = result['segments']
+        print(f"Транскрипция завершена. Длина текста: {len(full_text)} символов")
 
         # Сохранение полного текста без разделения по спикерам
         full_text_filename = f"{os.path.splitext(filename)[0]}_full.txt"
@@ -83,7 +119,7 @@ for filename in os.listdir(FILES_DIR):
         print(f"Полный текст сохранён в {full_text_file_path}")
 
         # Шаг 2: Диаризация (выделение спикеров)
-        diarization = pipeline(file_path)
+        diarization = diarization_pipeline(file_path)
 
         # Шаг 3: Сопоставление спикеров с транскрипцией
         speaker_transcript = assign_speakers(segments, diarization)
@@ -97,12 +133,4 @@ for filename in os.listdir(FILES_DIR):
         with open(text_file_path, "w", encoding="utf-8") as text_file:
             text_file.write(speaker_text)
         print(f"Текст со спикерами сохранён в {text_file_path}")
-
-        # Шаг 5: Создание выжимки из полного текста
-        summary_text = summarize_text(full_text)
-
-        # Шаг 6: Сохранение выжимки
-        summary_file_path = os.path.join(SUM_TEXT_DIR, text_filename)
-        with open(summary_file_path, "w", encoding="utf-8") as summary_file:
-            summary_file.write(summary_text)
-        print(f"Суммаризированный текст сохранён в {summary_file_path}")
+        print(f"Для суммаризации запустите: python summarize.py")
