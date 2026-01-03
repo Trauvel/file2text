@@ -38,8 +38,15 @@ except RuntimeError as e:
     else:
         raise
 
-# Ваш Hugging Face токен
-YOUR_AUTH_TOKEN = "REPLACED_TOKEN"
+# Ваш Hugging Face токен (получите на https://huggingface.co/settings/tokens)
+# Установите переменную окружения: export HUGGINGFACE_TOKEN="ваш_токен"
+# Или создайте файл .env с HUGGINGFACE_TOKEN=ваш_токен
+YOUR_AUTH_TOKEN = os.getenv("HUGGINGFACE_TOKEN", "")
+if not YOUR_AUTH_TOKEN:
+    print("ВНИМАНИЕ: Hugging Face токен не найден!")
+    print("Установите переменную окружения HUGGINGFACE_TOKEN или создайте файл .env")
+    print("Получите токен на: https://huggingface.co/settings/tokens")
+    raise ValueError("HUGGINGFACE_TOKEN не установлен")
 
 # Инициализация пайплайна для диаризации с токеном
 diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token=YOUR_AUTH_TOKEN)
