@@ -44,10 +44,37 @@ ffmpeg/presets/libvpx-720p.ffpreset
 ffmpeg/presets/libvpx-720p50_60.ffpreset
 ffmpeg/presets/libvpx-1080p.ffpreset
 ffmpeg/presets/libvpx-1080p50_60.ffpreset
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Данные и результаты
 files/
 text/
 sumText/
 logical_blocks/
+*.wav
+*.mp3
+*.mp4
+
+# Конфигурация
 .env
 *.env
 .env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
