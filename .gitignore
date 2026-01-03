@@ -48,3 +48,6 @@ files/
 text/
 sumText/
 logical_blocks/
+.env
+*.env
+.env.local
